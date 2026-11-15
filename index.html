@@ -2152,6 +2152,7 @@ async function afterLogin(user){
     sb.from("admins").select("user_id").eq("user_id",user.id).maybeSingle(),
     sb.from("progress").select("data").eq("user_id",user.id).maybeSingle()]);
   AUTH.student=st.data||null;AUTH.admin=!!(ad.data);
+  if(!AUTH.admin){try{const {data:ss}=await sb.auth.getSession();const tk=ss&&ss.session&&ss.session.access_token;if(tk){const r=await callAccount({action:"claim-admin"},tk);if(r.ok)AUTH.admin=true}}catch(e){}}
   if(pr.data&&pr.data.data&&pr.data.data.v)S=Object.assign(blank(),pr.data.data);
   else{const l=lsGet();S=l?Object.assign(blank(),l):blank()}
   migrate();initXP();
@@ -2225,8 +2226,8 @@ function bindAuth(){
     AUTH.busy=false;AUTH.screen="login";AUTH.msg="📧 "+esc(r.message||"Đã gửi mật khẩu tạm thời mới.")+" Kiểm tra cả mục Thư rác.";render();
   };
 }
-async function callAccount(body){
-  try{const res=await fetch(SB_CFG.url+"/functions/v1/account",{method:"POST",headers:{"Content-Type":"application/json",apikey:SB_CFG.key},body:JSON.stringify(body)});
+async function callAccount(body,token){
+  try{const hd={"Content-Type":"application/json",apikey:SB_CFG.key};if(token)hd.Authorization="Bearer "+token;const res=await fetch(SB_CFG.url+"/functions/v1/account",{method:"POST",headers:hd,body:JSON.stringify(body)});
     const j=await res.json().catch(()=>({}));return res.ok?Object.assign({ok:true},j):{ok:false,error:j.error}}
   catch(e){return{ok:false,error:"Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại."}}
 }

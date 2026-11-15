@@ -1,5 +1,5 @@
 /* English Start Pro – service worker: cho phép cài app và học khi mất mạng */
-const CACHE = "esp-v1.1.0";
+const CACHE = "esp-v1.1.1";
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {

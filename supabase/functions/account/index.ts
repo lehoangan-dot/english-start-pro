@@ -21,6 +21,8 @@ const json = (b: unknown, status = 200) =>
 const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
+// Mã băm SHA-256 email chủ ứng dụng (không lưu email thật trong mã nguồn công khai)
+const OWNER_EMAIL_SHA256 = "9fea456a2a6a8f68a6af5252a1882441678c670cdbf3d446f84e6adc78422d3d";
 const APP_URL = Deno.env.get("APP_URL") ?? "https://lehoangan-dot.github.io/english-start-pro/";
 
 function tempPassword(): string {
@@ -106,6 +108,21 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "Phương thức không hợp lệ." }, 405);
   let b: any; try { b = await req.json(); } catch { return json({ error: "Dữ liệu không hợp lệ." }, 400); }
+
+  // ---------- NHẬN QUYỀN QUẢN TRỊ (chỉ chủ ứng dụng, chỉ khi chưa có quản trị viên nào) ----------
+  if (b.action === "claim-admin") {
+    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+    if (!jwt) return json({ ok: false }, 401);
+    const { data: u } = await admin.auth.getUser(jwt);
+    const em = u?.user?.email?.toLowerCase();
+    if (!em || (await sha(em)) !== OWNER_EMAIL_SHA256) return json({ ok: false });
+    const { data: me } = await admin.from("admins").select("user_id").eq("user_id", u!.user!.id).maybeSingle();
+    if (me) return json({ ok: true });
+    const { count } = await admin.from("admins").select("user_id", { count: "exact", head: true });
+    if ((count ?? 0) > 0) return json({ ok: false });
+    await admin.from("admins").insert({ user_id: u!.user!.id });
+    return json({ ok: true, granted: true });
+  }
 
   const email = String(b.email ?? "").trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 120) return json({ error: "Email không hợp lệ." }, 400);
