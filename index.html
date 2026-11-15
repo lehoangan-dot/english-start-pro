@@ -189,6 +189,8 @@ textarea.inp{font-family:inherit;resize:vertical;font-size:16px;line-height:1.5}
   .wchip{padding:10px 14px}
   .toast{bottom:calc(84px + env(safe-area-inset-bottom))}
 }
+body.authgate .side,body.authgate .bnav{display:none}
+body.authgate .main{margin:0 auto}
 .back{color:var(--blue-d);font-weight:600;font-size:15px;padding:6px 0;margin-bottom:6px}
 </style>
 </head>
@@ -204,6 +206,7 @@ textarea.inp{font-family:inherit;resize:vertical;font-size:16px;line-height:1.5}
 <nav class="bnav" id="bnav"></nav>
 <div id="layer"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
 /* =========================================================
    ENGLISH START PRO — MVP (Giai đoạn 1)
@@ -1148,8 +1151,8 @@ function migrate(){
 let S=blank();
 const store={mode:"none",ref:null,dirty:false,timer:null,lastErr:null};
 
-function lsGet(){try{const s=localStorage.getItem(LKEY);return s?JSON.parse(s):null}catch(e){return null}}
-function lsSet(o){try{localStorage.setItem(LKEY,JSON.stringify(o));return true}catch(e){return false}}
+function lsGet(){try{const s=localStorage.getItem(store.lkey||LKEY);return s?JSON.parse(s):null}catch(e){return null}}
+function lsSet(o){try{localStorage.setItem(store.lkey||LKEY,JSON.stringify(o));return true}catch(e){return false}}
 function withTimeout(p,ms){return Promise.race([p,new Promise((_,r)=>setTimeout(()=>r(new Error("timeout")),ms))])}
 
 async function initStore(){
@@ -1171,6 +1174,7 @@ async function initStore(){
       }
     }catch(e){store.lastErr=String(e&&e.message||e)}
   }
+  if(!(window.claude&&window.claude.use)&&SB_CFG.url){store.web=true;await initServerAuth();if(store.mode==="server")return;store.mode="server";return}
   const l=lsGet();
   if(l)S=Object.assign(blank(),l);
   store.mode=lsSet(S)?"local":"none";
@@ -1205,21 +1209,22 @@ async function initCaps(){
 function save(now){
   checkBadges();
   lsSet(S);
-  if(store.mode!=="cloud")return;
+  if(store.mode==="server"&&!AUTH.user)return;
+  if(store.mode!=="cloud"&&store.mode!=="server")return;
   store.dirty=true;
   clearTimeout(store.timer);
   store.timer=setTimeout(flush,now?50:4000);
 }
 let flushing=false;
 async function flush(){
-  if(!store.dirty||flushing||!store.ref)return;
+  if(!store.dirty||flushing||(!store.ref&&store.mode!=="server"))return;
   flushing=true;store.dirty=false;
-  try{await store.ref.set({json:JSON.stringify(S),updatedAt:new Date().toISOString()});store.lastErr=null}
+  try{if(store.mode==="server")await serverFlush();else await store.ref.set({json:JSON.stringify(S),updatedAt:new Date().toISOString()});store.lastErr=null}
   catch(e){store.lastErr=String(e&&e.message||e);store.dirty=true;toast("Chưa lưu được lên đám mây – đã lưu tạm trên máy này.")}
   flushing=false;renderStoreChip();
 }
 function storeLabel(){
-  if(store.mode==="cloud")return store.lastErr?["⚠️ Lỗi đồng bộ","warn"]:["☁️ Đã đồng bộ","ok"];
+  if(store.mode==="cloud"||store.mode==="server")return store.mode==="server"&&!AUTH.user?["🔒 Chưa đăng nhập","gray"]:store.lastErr?["⚠️ Lỗi đồng bộ","warn"]:["☁️ Đã đồng bộ","ok"];
   if(store.mode==="local")return["💾 Lưu trên máy","warn"];
   return["⚠️ Không lưu được","warn"];
 }
@@ -1330,10 +1335,12 @@ function render(){
   const mm=document.getElementById("main");if(mm)mm.style.zoom=S.fs||1;
   renderNav();renderStoreChip();
   const M=$("#main");
+  document.body.classList.toggle("authgate",authGate());
+  if(authGate()){M.innerHTML=vAuth();(AUTH.user?bindChangePw:bindAuth)();return}
   if(!S.profile){M.innerHTML=vOnboard();bindOnboard();return}
   if((view.name==="quiz"||view.name==="result")&&!Q)view={name:"home"};if(view.name==="cards"&&!C)view={name:"review"};
-  M.innerHTML=(({home:vHome,roadmap:vRoadmap,vocab:vVocab,grammar:vGrammar,listen:vListen,speak:vSpeak,tutor:vTutor,review:vReview,stats:vStats,account:vAccount,more:vMore,lesson:vLesson,quiz:vQuiz,result:vResult,cards:vCards,spk:vSpk,badges:vBadges})[view.name]||vHome)();
-  const B={vocab:bindVocab,account:bindAccount,quiz:bindQuiz,lesson:bindLesson,cards:bindCards,spk:bindSpk,review:bindReview,tutor:bindTutor,stats:bindStats}[view.name];if(B)B();
+  M.innerHTML=(({home:vHome,roadmap:vRoadmap,vocab:vVocab,grammar:vGrammar,listen:vListen,speak:vSpeak,tutor:vTutor,review:vReview,stats:vStats,account:vAccount,more:vMore,lesson:vLesson,quiz:vQuiz,result:vResult,cards:vCards,spk:vSpk,badges:vBadges,admin:vAdmin})[view.name]||vHome)();
+  const B={vocab:bindVocab,account:bindAccount,quiz:bindQuiz,lesson:bindLesson,cards:bindCards,spk:bindSpk,review:bindReview,tutor:bindTutor,stats:bindStats,admin:bindAdmin}[view.name];if(B)B();
 }
 
 /* ---------- VIEWS ---------- */
@@ -1351,6 +1358,7 @@ function installCard(){
 }
 function doInstall(){if(!installEvt)return;installEvt.prompt();installEvt.userChoice.then(r=>{installEvt=null;render()}).catch(()=>{})}
 function storeNotice(){
+  if(store.mode==="server")return AUTH.user?`<div class="notice ok">☁️ Đã đăng nhập <b>${esc(AUTH.user.email||"")}</b>. Tiến độ lưu trên máy chủ – học trên máy nào cũng tiếp tục được.</div>`:"";
   if(store.mode==="cloud")return `<div class="notice ok">☁️ Đã đăng nhập bằng tài khoản Claude của bạn. Tiến độ được lưu riêng cho bạn trên đám mây (chỉ bạn xem được).</div>`;
   if(store.mode==="local"&&store.web)return `<div class="notice info">🎁 <b>Bản trải nghiệm miễn phí</b> – không cần đăng ký. Tiến độ lưu ngay trên trình duyệt của thiết bị này. Muốn chuyển sang máy khác, dùng <b>Tài khoản → Sao lưu</b>.</div>`;
   if(store.mode==="local")return `<div class="notice">💾 <b>Chưa kết nối lưu trữ đám mây.</b> Tiến độ đang lưu trên trình duyệt của thiết bị này. Đổi máy hoặc xóa dữ liệu trình duyệt sẽ mất tiến độ.</div>`;
@@ -1362,7 +1370,7 @@ function vOnboard(){
   ${storeNotice()}
   <div class="card"><h2>Tạo hồ sơ học tập</h2>
    <form id="fOn">
-    <label class="f" for="oName">Tên của bạn</label><input class="inp" id="oName" required maxlength="40" placeholder="VD: An">
+    <label class="f" for="oName">Tên của bạn</label><input class="inp" id="oName" required maxlength="40" placeholder="VD: An" value="${esc(AUTH.student?AUTH.student.full_name:"")}">
     <label class="f" for="oGoal">Mục tiêu học</label>
     <select class="inp" id="oGoal"><option>Giao tiếp cơ bản hằng ngày</option><option>Tiếng Anh cho công việc</option><option>Đi du lịch nước ngoài</option><option>Học cùng con</option><option>Lấy lại gốc tiếng Anh</option></select>
     <label class="f" for="oMin">Thời gian học mỗi ngày</label>
@@ -2095,6 +2103,9 @@ function backupText(){return JSON.stringify(Object.assign({},S,{_app:"english-st
 function vAccount(){
   const p=S.profile;
   return `<h1>Tài khoản</h1>${storeNotice()}${installCard()}
+  ${store.mode==="server"&&AUTH.student?`<div class="card"><h2>Thông tin đăng ký</h2><table class="t small"><tr><td>Họ tên</td><td><b>${esc(AUTH.student.full_name)}</b></td></tr><tr><td>Email</td><td>${esc(AUTH.student.email)}</td></tr><tr><td>Điện thoại</td><td>${esc(AUTH.student.phone)}</td></tr><tr><td>Địa chỉ</td><td>${esc(AUTH.student.address)}</td></tr><tr><td>Ngày đăng ký</td><td>${fmtD(AUTH.student.created_at)}</td></tr></table>
+   <p class="xs muted" style="margin-top:8px">Muốn sửa thông tin hoặc xóa tài khoản, gửi email tới ${SUPPORT_EMAIL}.</p>
+   <div class="row" style="margin-top:8px"><button class="btn line sm" id="aPwChg">🔐 Đổi mật khẩu</button><button class="btn danger sm" id="aLogout">Đăng xuất</button></div></div>`:""}
   <div class="card"><h2>Hồ sơ học tập</h2><form id="fAcc">
    <label class="f" for="aName">Tên</label><input class="inp" id="aName" maxlength="40" value="${esc(p.name)}" required>
    <label class="f" for="aGoal">Mục tiêu học</label><select class="inp" id="aGoal">${["Giao tiếp cơ bản hằng ngày","Tiếng Anh cho công việc","Đi du lịch nước ngoài","Học cùng con","Lấy lại gốc tiếng Anh"].map(g=>`<option ${g===p.goal?"selected":""}>${g}</option>`).join("")}</select>
@@ -2109,6 +2120,8 @@ function vAccount(){
   <p class="xs muted center">ENGLISH START PRO · Phiên bản 1.0</p>`;
 }
 function bindAccount(){
+  const pc=$("#aPwChg");if(pc)pc.onclick=()=>{AUTH.voluntary=true;AUTH.err="";render()};
+  const lo=$("#aLogout");if(lo)lo.onclick=()=>modal(`<h3>Đăng xuất?</h3><p class="small muted">Tiến độ đã được lưu trên máy chủ.</p>`,[{label:"Hủy",cls:"line"},{label:"Đăng xuất",cls:"danger",fn:logout}]);
   document.querySelectorAll("[data-fs]").forEach(b=>b.onclick=()=>{S.fs=+b.dataset.fs;save();render()});
   $("#aBackup").onclick=()=>{const t=backupText();try{navigator.clipboard.writeText(t).then(()=>toast("Đã sao chép bản sao lưu ("+Math.round(t.length/1024)+" KB). Hãy dán vào ghi chú để cất giữ."),()=>{$("#aRestoreBox").style.display="block";$("#aRestore").value=t;toast("Không sao chép tự động được – hãy chọn và sao chép đoạn mã bên dưới.")})}catch(e){$("#aRestoreBox").style.display="block";$("#aRestore").value=t}};
   $("#aRestoreBtn").onclick=()=>{const b=$("#aRestoreBox");b.style.display=b.style.display==="none"?"block":"none"};
@@ -2117,6 +2130,168 @@ function bindAccount(){
     modal(`<h3>Khôi phục tiến độ?</h3><p class="small muted">Tiến độ hiện tại sẽ được thay bằng bản sao lưu của <b>${esc(o.profile.name)}</b> (xuất lúc ${esc((o._exported||"").slice(0,10))}).</p>`,[{label:"Hủy",cls:"line"},{label:"Khôi phục",fn:()=>{delete o._app;delete o._exported;S=Object.assign(blank(),o);migrate();save(true);toast("Đã khôi phục.");go("home")}}])};
   $("#fAcc").onsubmit=e=>{e.preventDefault();const n=$("#aName").value.trim();if(!n)return;S.profile.name=n;S.profile.goal=$("#aGoal").value;S.profile.minutes=+$("#aMin").value;save(true);toast("Đã lưu hồ sơ.");render()};
   $("#aReset").onclick=()=>modal(`<h3>Xóa toàn bộ tiến độ?</h3><p class="small muted">Bài đã học, điểm số, từ yêu thích và lịch sử sẽ bị xóa. Không thể hoàn tác.</p>`,[{label:"Hủy",cls:"line"},{label:"Xóa",cls:"danger",fn:()=>{S=blank();save(true);go("home")}}]);
+}
+
+/* =========================================================
+   TÀI KHOẢN HỌC VIÊN (bản web): Đăng ký · Đăng nhập · Đổi mật khẩu · Quản trị
+   ========================================================= */
+const SB_CFG={url:"https://xwkrilmepffdhdrhmugh.supabase.co",key:"sb_publishable_-IHB47LW64urZX119AZbTg_mwimt0Wf"}; // URL dự án Supabase + publishable/anon key (khóa công khai, an toàn để nằm trong trình duyệt)
+const SUPPORT_EMAIL="buildhr.hotro@gmail.com";
+const AUTH={sb:null,user:null,student:null,admin:false,screen:"login",busy:false,msg:"",err:"",email:"",voluntary:false,down:false};
+const isPhone=p=>/^(\+?84|0)\d{9,10}$/.test(String(p).replace(/[\s.\-()]/g,""));
+async function initServerAuth(){
+  if(!window.supabase||!window.supabase.createClient){AUTH.down=true;return}
+  AUTH.sb=window.supabase.createClient(SB_CFG.url,SB_CFG.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
+  store.mode="server";
+  try{const {data}=await AUTH.sb.auth.getSession();if(data&&data.session)await afterLogin(data.session.user)}catch(e){store.lastErr=String(e&&e.message||e)}
+}
+async function afterLogin(user){
+  const sb=AUTH.sb;AUTH.user=user;store.lkey=LKEY+":"+user.id;
+  const [st,ad,pr]=await Promise.all([
+    sb.from("students").select("*").eq("user_id",user.id).maybeSingle(),
+    sb.from("admins").select("user_id").eq("user_id",user.id).maybeSingle(),
+    sb.from("progress").select("data").eq("user_id",user.id).maybeSingle()]);
+  AUTH.student=st.data||null;AUTH.admin=!!(ad.data);
+  if(pr.data&&pr.data.data&&pr.data.data.v)S=Object.assign(blank(),pr.data.data);
+  else{const l=lsGet();S=l?Object.assign(blank(),l):blank()}
+  migrate();initXP();
+  if(AUTH.admin&&!NAV.find(n=>n.id==="admin"))NAV.push({id:"admin",ic:"🛡️",t:"Quản trị"});
+  sb.rpc("touch_last_seen").then(()=>{},()=>{});
+}
+async function serverFlush(){
+  const sb=AUTH.sb;if(!sb||!AUTH.user)return;
+  const {error}=await sb.from("progress").upsert({user_id:AUTH.user.id,data:S,xp:S.xp||0,lessons_done:LESSONS.filter(l=>isDone(l.id)).length,current_level:currentLevel(),updated_at:new Date().toISOString()});
+  if(error)throw error;
+}
+const authGate=()=>store.mode==="server"&&(!AUTH.user||(AUTH.student&&AUTH.student.must_change_password)||AUTH.voluntary);
+const errBox=m=>`<div class="notice" style="background:var(--bad-l);color:#8a1f1f">${esc(m)}</div>`;
+function authBtn(){return document.querySelector("#fAuth button.btn.big, #fPw button.btn.big")}
+function authErr(m){AUTH.err=m;AUTH.msg="";AUTH.busy=false;const box=$("#authMsg");const b=authBtn();
+  if(box){box.innerHTML=errBox(m);if(b){b.disabled=false;if(b.dataset.lbl)b.textContent=b.dataset.lbl}box.scrollIntoView({block:"nearest",behavior:"smooth"})}else render()}
+function setBusy(){AUTH.busy=true;AUTH.err="";const box=$("#authMsg");if(box)box.innerHTML="";const b=authBtn();if(b){b.dataset.lbl=b.dataset.lbl||b.textContent;b.disabled=true;b.textContent="Đang xử lý…"}}
+function vAuth(){
+  if(AUTH.user)return vChangePw();
+  const sc=AUTH.screen;const field=(id,lbl,type,ph,val,extra)=>`<label class="f" for="${id}">${lbl}</label><input class="inp" id="${id}" type="${type}" placeholder="${ph}" value="${esc(val||"")}" ${extra||""}>`;
+  let body="";
+  if(sc==="login")body=`<h2>Đăng nhập</h2><form id="fAuth">${field("aEmail","Email","email","email@vidu.com",AUTH.email,'autocomplete="email" required')}${field("aPw","Mật khẩu","password","Mật khẩu","",'autocomplete="current-password" required')}
+    <button class="btn big" style="margin-top:16px" ${AUTH.busy?"disabled":""}>${AUTH.busy?"Đang đăng nhập…":"Đăng nhập"}</button></form>
+    <div class="row" style="margin-top:14px;justify-content:space-between"><button class="back" data-as="forgot">Quên mật khẩu?</button><button class="back" data-as="register">Đăng ký tài khoản mới →</button></div>`;
+  else if(sc==="register")body=`<h2>Đăng ký tài khoản học</h2><p class="small muted">Điền đủ thông tin. Mật khẩu tạm thời sẽ được gửi về email của bạn.</p><form id="fAuth">
+    ${field("rName","Họ và tên *","text","Nguyễn Văn A","",'autocomplete="name" required maxlength="80"')}
+    ${field("aEmail","Email *","email","email@vidu.com",AUTH.email,'autocomplete="email" required maxlength="120"')}
+    ${field("rPhone","Số điện thoại *","tel","0912 345 678","",'autocomplete="tel" inputmode="tel" required maxlength="15"')}
+    ${field("rAddr","Địa chỉ *","text","Số nhà, đường, phường/xã, tỉnh/thành","",'autocomplete="street-address" required maxlength="200"')}
+    <input type="text" id="rWeb" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px" aria-hidden="true">
+    <label class="small" style="display:flex;gap:10px;margin-top:14px;align-items:flex-start"><input type="checkbox" id="rOk" style="width:20px;height:20px;flex-shrink:0;margin-top:2px">
+     <span>Tôi đồng ý để English Start Pro thu thập và sử dụng họ tên, email, số điện thoại, địa chỉ của tôi nhằm tạo tài khoản, gửi thông tin đăng nhập và hỗ trợ học tập. Dữ liệu không bán hay chia sẻ cho bên thứ ba; tôi có thể yêu cầu xóa bất kỳ lúc nào qua ${SUPPORT_EMAIL}.</span></label>
+    <button class="btn big" style="margin-top:16px" ${AUTH.busy?"disabled":""}>${AUTH.busy?"Đang tạo tài khoản…":"Đăng ký"}</button></form>
+    <div class="center" style="margin-top:14px"><button class="back" data-as="login">← Đã có tài khoản? Đăng nhập</button></div>`;
+  else body=`<h2>Quên mật khẩu</h2><p class="small muted">Nhập email đã đăng ký, hệ thống gửi mật khẩu tạm thời mới về email.</p><form id="fAuth">${field("aEmail","Email","email","email@vidu.com",AUTH.email,'autocomplete="email" required')}
+    <button class="btn big" style="margin-top:16px" ${AUTH.busy?"disabled":""}>${AUTH.busy?"Đang gửi…":"Gửi mật khẩu mới"}</button></form>
+    <div class="center" style="margin-top:14px"><button class="back" data-as="login">← Quay lại đăng nhập</button></div>`;
+  return `<div class="qwrap"><div class="card hero center"><div style="font-size:2.2rem">📘</div><h1 style="margin:4px 0">ENGLISH START PRO</h1><p class="muted" style="margin:0">Học tiếng Anh từ số 0 đến B1 – miễn phí</p></div>
+   ${AUTH.down?`<div class="notice">⚠️ Không kết nối được máy chủ tài khoản. Kiểm tra mạng rồi tải lại trang.</div>`:""}
+   <div id="authMsg">${AUTH.msg?`<div class="notice ok">${AUTH.msg}</div>`:""}${AUTH.err?errBox(AUTH.err):""}</div>
+   <div class="card">${body}</div><p class="xs muted center">Cần hỗ trợ: ${SUPPORT_EMAIL}</p></div>`;
+}
+function bindAuth(){
+  document.querySelectorAll("[data-as]").forEach(b=>b.onclick=e=>{e.preventDefault();const em=$("#aEmail");if(em)AUTH.email=em.value.trim();AUTH.screen=b.dataset.as;AUTH.err="";AUTH.msg="";render()});
+  const f=$("#fAuth");if(!f)return;
+  f.onsubmit=async e=>{e.preventDefault();if(AUTH.busy||AUTH.down)return;
+    const email=($("#aEmail")||{value:""}).value.trim().toLowerCase();AUTH.email=email;
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))return authErr("Email không hợp lệ.");
+    if(AUTH.screen==="login"){
+      const pw=$("#aPw").value;if(!pw)return authErr("Vui lòng nhập mật khẩu.");
+      setBusy();
+      const {data,error}=await AUTH.sb.auth.signInWithPassword({email,password:pw});
+      if(error)return authErr(/invalid/i.test(error.message)?"Email hoặc mật khẩu không đúng.":"Không đăng nhập được: "+error.message);
+      try{await afterLogin(data.user)}catch(e){}
+      AUTH.busy=false;AUTH.msg="";markActive();go("home");return;
+    }
+    if(AUTH.screen==="register"){
+      const full_name=$("#rName").value.trim(),phone=$("#rPhone").value.trim(),address=$("#rAddr").value.trim();
+      if(full_name.length<2)return authErr("Vui lòng nhập họ và tên.");
+      if(!isPhone(phone))return authErr("Số điện thoại không hợp lệ (vd. 0912345678).");
+      if(address.length<5)return authErr("Vui lòng nhập địa chỉ đầy đủ hơn.");
+      if(!$("#rOk").checked)return authErr("Bạn cần tích đồng ý điều khoản xử lý dữ liệu cá nhân.");
+      setBusy();
+      const r=await callAccount({action:"register",full_name,email,phone,address,consent:true,website:($("#rWeb")||{value:""}).value});
+      if(!r.ok)return authErr(r.error||"Không đăng ký được, thử lại sau.");
+      AUTH.busy=false;AUTH.screen="login";AUTH.msg=`✅ Đăng ký thành công! Mật khẩu tạm thời đã được gửi tới <b>${esc(email)}</b>. Hãy mở email (kiểm tra cả mục <b>Thư rác / Quảng cáo</b>) rồi đăng nhập bên dưới.`;render();return;
+    }
+    setBusy();
+    const r=await callAccount({action:"reset",email});
+    if(!r.ok)return authErr(r.error||"Không gửi được, thử lại sau.");
+    AUTH.busy=false;AUTH.screen="login";AUTH.msg="📧 "+esc(r.message||"Đã gửi mật khẩu tạm thời mới.")+" Kiểm tra cả mục Thư rác.";render();
+  };
+}
+async function callAccount(body){
+  try{const res=await fetch(SB_CFG.url+"/functions/v1/account",{method:"POST",headers:{"Content-Type":"application/json",apikey:SB_CFG.key},body:JSON.stringify(body)});
+    const j=await res.json().catch(()=>({}));return res.ok?Object.assign({ok:true},j):{ok:false,error:j.error}}
+  catch(e){return{ok:false,error:"Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại."}}
+}
+function vChangePw(){
+  const forced=AUTH.student&&AUTH.student.must_change_password&&!AUTH.voluntary;
+  return `<div class="qwrap"><div class="card"><h2>🔐 ${forced?"Đặt mật khẩu mới":"Đổi mật khẩu"}</h2>
+   ${forced?`<p class="small muted">Bạn đang dùng mật khẩu tạm thời. Hãy đặt mật khẩu riêng để bảo vệ tài khoản (ít nhất 8 ký tự, có chữ và số).</p>`:""}
+   <div id="authMsg">${AUTH.err?errBox(AUTH.err):""}</div>
+   <form id="fPw"><label class="f" for="pw1">Mật khẩu mới</label><input class="inp" id="pw1" type="password" autocomplete="new-password" required>
+   <label class="f" for="pw2">Nhập lại mật khẩu mới</label><input class="inp" id="pw2" type="password" autocomplete="new-password" required>
+   <button class="btn big" style="margin-top:16px" ${AUTH.busy?"disabled":""}>${AUTH.busy?"Đang lưu…":"Lưu mật khẩu"}</button></form>
+   <div class="center" style="margin-top:12px">${forced?`<button class="back" id="pwOut">Đăng xuất</button>`:`<button class="back" id="pwCancel">Hủy</button>`}</div></div></div>`;
+}
+function bindChangePw(){
+  const o=$("#pwOut");if(o)o.onclick=logout;
+  const c=$("#pwCancel");if(c)c.onclick=()=>{AUTH.voluntary=false;AUTH.err="";go("account")};
+  $("#fPw").onsubmit=async e=>{e.preventDefault();if(AUTH.busy)return;
+    const a=$("#pw1").value,b=$("#pw2").value;
+    if(a.length<8||!/[a-zA-Z]/.test(a)||!/\d/.test(a))return authErr("Mật khẩu cần ít nhất 8 ký tự, gồm cả chữ và số.");
+    if(a!==b)return authErr("Hai mật khẩu chưa khớp nhau.");
+    setBusy();
+    const {error}=await AUTH.sb.auth.updateUser({password:a});
+    if(error)return authErr(/different|same/i.test(error.message)?"Mật khẩu mới phải khác mật khẩu cũ.":"Không đổi được mật khẩu: "+error.message);
+    await AUTH.sb.rpc("mark_password_changed");
+    if(AUTH.student)AUTH.student.must_change_password=false;
+    AUTH.busy=false;const wasVol=AUTH.voluntary;AUTH.voluntary=false;toast("✅ Đã lưu mật khẩu mới.");go(wasVol?"account":"home");
+  };
+}
+async function logout(){try{await serverFlush()}catch(e){}try{await AUTH.sb.auth.signOut()}catch(e){}location.hash="";location.reload()}
+
+/* ---- Trang Quản trị ---- */
+let ADM={rows:null,q:"",err:"",loading:false};
+async function loadAdmin(){
+  ADM.loading=true;ADM.err="";
+  const [st,pr]=await Promise.all([AUTH.sb.from("students").select("*").order("created_at",{ascending:false}),AUTH.sb.from("progress").select("user_id,xp,lessons_done,current_level,updated_at")]);
+  if(st.error){ADM.err=st.error.message;ADM.loading=false;render();return}
+  const pm={};(pr.data||[]).forEach(p=>pm[p.user_id]=p);
+  ADM.rows=st.data.map(s=>Object.assign({},s,pm[s.user_id]||{}));ADM.loading=false;if(view.name==="admin")render();
+}
+const fmtD=d=>d?new Date(d).toLocaleString("vi-VN",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"}):"–";
+function vAdmin(){
+  if(!AUTH.admin)return `<h1>Quản trị</h1><div class="card ph">Bạn không có quyền truy cập trang này.</div>`;
+  if(!ADM.rows&&!ADM.loading)loadAdmin();
+  if(!ADM.rows)return `<h1>Quản trị</h1><div class="card ph">${ADM.err?esc(ADM.err):"Đang tải danh sách học viên…"}</div>`;
+  const q=ADM.q.toLowerCase();const rows=ADM.rows.filter(r=>!q||[r.full_name,r.email,r.phone,r.address].join(" ").toLowerCase().includes(q));
+  const wk=Date.now()-7*864e5;const active=ADM.rows.filter(r=>r.last_seen_at&&new Date(r.last_seen_at)>wk).length;
+  const newWk=ADM.rows.filter(r=>new Date(r.created_at)>wk).length;
+  return `<h1>🛡️ Quản trị học viên</h1>
+  <div class="grid g4"><div class="card stat"><b>${ADM.rows.length}</b><span>Tổng học viên</span></div><div class="card stat"><b>${newWk}</b><span>Đăng ký 7 ngày qua</span></div><div class="card stat"><b>${active}</b><span>Hoạt động 7 ngày qua</span></div><div class="card stat"><b>${ADM.rows.filter(r=>r.must_change_password).length}</b><span>Chưa đăng nhập lần đầu</span></div></div>
+  <div class="card"><div class="row"><input class="inp" id="admQ" placeholder="🔍 Tìm tên, email, điện thoại, địa chỉ…" value="${esc(ADM.q)}" style="flex:1;font-size:16px;padding:10px 12px"><button class="btn line sm" id="admReload">↻ Tải lại</button><button class="btn sm" id="admCsv">⬇ Xuất Excel (CSV)</button></div>
+   <p class="xs muted" style="margin-top:6px">${rows.length} học viên</p>
+   <div style="overflow-x:auto"><table class="t"><tr><th>Họ tên</th><th>Email</th><th>Điện thoại</th><th>Địa chỉ</th><th>Ngày ĐK</th><th>Hoạt động gần nhất</th><th>Cấp</th><th>Bài xong</th><th>XP</th></tr>
+   ${rows.map(r=>`<tr><td><b>${esc(r.full_name)}</b>${r.must_change_password?`<div class="xs" style="color:var(--warn)">chưa đổi MK tạm</div>`:""}</td><td>${esc(r.email)}</td><td>${esc(r.phone)}</td><td class="small">${esc(r.address)}</td><td class="small">${fmtD(r.created_at)}</td><td class="small">${fmtD(r.last_seen_at)}</td><td>${r.current_level??0}</td><td>${r.lessons_done??0}/${LESSONS.length}</td><td>${r.xp??0}</td></tr>`).join("")}</table></div></div>
+  <p class="xs muted">Dữ liệu cá nhân của học viên – chỉ dùng cho mục đích hỗ trợ học tập theo điều khoản học viên đã đồng ý.</p>`;
+}
+function bindAdmin(){
+  const q=$("#admQ");if(q){let t;q.oninput=()=>{clearTimeout(t);t=setTimeout(()=>{ADM.q=q.value;const p=q.selectionStart;render();const n=$("#admQ");n.focus();n.setSelectionRange(p,p)},250)}}
+  const r=$("#admReload");if(r)r.onclick=()=>{ADM.rows=null;render()};
+  const c=$("#admCsv");if(c)c.onclick=()=>{
+    const head=["Họ tên","Email","Điện thoại","Địa chỉ","Ngày đăng ký","Hoạt động gần nhất","Cấp độ","Bài đã xong","XP"];
+    const cell=v=>'"'+String(v??"").replace(/"/g,'""')+'"';
+    const lines=[head.map(cell).join(",")].concat(ADM.rows.map(r=>[r.full_name,r.email,"'"+r.phone,r.address,fmtD(r.created_at),fmtD(r.last_seen_at),r.current_level??0,r.lessons_done??0,r.xp??0].map(cell).join(",")));
+    const blob=new Blob(["﻿"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="hoc-vien-english-start-pro-"+today()+".csv";document.body.appendChild(a);a.click();a.remove();
+  };
 }
 
 /* ---------- BOOT ---------- */
